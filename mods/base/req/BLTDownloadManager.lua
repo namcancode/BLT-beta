@@ -119,10 +119,23 @@ function BLTDownloadManager:clbk_download_finished( data, http_id )
 
 	local save = function()
 
+		-- Create locals
 		local wait = function( x )
 			for i = 1, (x or 5) do
 				coroutine.yield()
 			end
+		end
+
+		local temp_dir = Application:nice_path( download.update:GetInstallDirectory() .. "_temp/" )
+		local file_path = Application:nice_path( BLTModManager.Constants:DownloadsDirectory() .. tostring(download.update:GetId()) .. ".zip", false )
+		local temp_install_dir = Application:nice_path( temp_dir .. download.update:GetInstallFolder(), false )
+		local install_path = Application:nice_path( download.update:GetInstallDirectory() .. download.update:GetInstallFolder(), false )
+		local extract_path = Application:nice_path( temp_install_dir .. "/" .. download.update:GetInstallFolder(), false )
+
+		local cleanup = function()
+			SystemFS:delete_file( file_path )
+			SystemFS:delete_file( temp_install_dir )
+			SystemFS:delete_file( temp_dir )
 		end
 
 		wait()
@@ -132,10 +145,10 @@ function BLTDownloadManager:clbk_download_finished( data, http_id )
 		download.state = "saving"
 		wait()
 
-		local file_path = BLTModManager.Constants:DownloadsDirectory() .. tostring(download.update:GetId()) .. ".zip"
-		if SystemFS:exists( file_path ) then
-			SystemFS:delete_file( file_path )
-		end
+		-- Perform initial cleanup first
+		cleanup()
+
+		-- Save file to downloads
 		local f = io.open( file_path, "wb+" )
 		if f then
 			f:write( data )
@@ -147,7 +160,7 @@ function BLTDownloadManager:clbk_download_finished( data, http_id )
 		download.state = "extracting"
 		wait()
 
-		local temp_install_dir = Application:nice_path( download.update:GetInstallDirectory() .. "_temp", true )
+		SystemFS:make_dir( temp_dir )
 		unzip( file_path, temp_install_dir )
 
 		-- Verify content hash with the server hash
@@ -155,36 +168,35 @@ function BLTDownloadManager:clbk_download_finished( data, http_id )
 		download.state = "verifying"
 		wait()
 
-		local local_hash = file.DirectoryHash( temp_install_dir )
+		local local_hash = file.DirectoryHash( Application:nice_path( extract_path, true ) )
 		local verified_ok = download.update:GetServerHash() == local_hash
 		if not verified_ok then
-			log("[Downloads] Failed!")
+			log("[Downloads] Failed to verify hashes!")
+			log("[Downloads] Server: ", download.update:GetServerHash())
+			log("[Downloads]  Local: ", local_hash)
 			download.state = "failed"
-			SystemFS:delete_file( temp_install_dir )
+			cleanup()
 			return
 		end
 
 		-- Remove old installation
 		log("[Downloads] Removing old installation...")
 		wait()
-
-		if download.update.GetInstallFolder then
-			SystemFS:delete_file( Application:nice_path( download.update:GetInstallDirectory() .. "/".. download.update:GetInstallFolder(), false ) )
-			wait()
-		end
+		SystemFS:delete_file( install_path )
 
 		-- Move the temporary installation
-		local move_success = file.MoveDirectory( Application:nice_path( temp_install_dir .. "/".. download.update:GetInstallFolder(), false ), Application:nice_path( download.update:GetInstallDirectory() .. "/".. download.update:GetInstallFolder(), false ) )
+		local move_success = file.MoveDirectory( extract_path, install_path )
 		if not move_success then
-			log("[Downloads] Failed!")
+			log("[Downloads] Failed to move installation directory!")
 			download.state = "failed"
-			SystemFS:delete_file( temp_install_dir )
+			cleanup()
 			return
 		end
 
 		-- Mark download as complete
 		log("[Downloads] Complete!")
 		download.state = "complete"
+		cleanup()
 
 	end
 
